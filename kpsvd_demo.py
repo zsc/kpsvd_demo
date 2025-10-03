@@ -55,19 +55,12 @@ def audio_to_log_mel_spectrogram(audio_path, sr=16000, n_fft=400, hop_length=160
         log_mel: Log-Mel spectrogram matrix
         original_audio: Original audio waveform
         sr: Sample rate
-        params: tuple of (n_fft, hop_length, n_mels)
-        stft_phase: Ground truth phase from STFT
     """
     if not AUDIO_SUPPORT:
         raise RuntimeError("Audio support not available. Install librosa and soundfile.")
 
     # Load audio and convert to mono
     audio, sr_orig = librosa.load(audio_path, sr=sr, mono=True)
-
-    # Compute STFT and save phase information (GT)
-    stft = librosa.stft(audio, n_fft=n_fft, hop_length=hop_length)
-    stft_magnitude = np.abs(stft)
-    stft_phase = np.angle(stft)  # Save GT phase
 
     # Create Mel spectrogram
     mel_spec = librosa.feature.melspectrogram(
@@ -87,16 +80,15 @@ def audio_to_log_mel_spectrogram(audio_path, sr=16000, n_fft=400, hop_length=160
 
     print(f"Audio loaded: {audio.shape[0]/sr:.2f}s, spectrogram shape: {log_mel_normalized.shape}")
 
-    return log_mel_normalized, audio, sr, (n_fft, hop_length, n_mels), stft_phase
+    return log_mel_normalized, audio, sr, (n_fft, hop_length, n_mels)
 
 
-def log_mel_spectrogram_to_audio(log_mel, stft_phase, sr=16000, n_fft=400, hop_length=160, n_mels=80, duration=None):
+def log_mel_spectrogram_to_audio(log_mel, sr=16000, n_fft=400, hop_length=160, n_mels=80, duration=None):
     """
-    Convert log-Mel spectrogram back to audio using GT phase
+    Convert log-Mel spectrogram back to audio using Griffin-Lim algorithm
 
     Args:
         log_mel: Log-Mel spectrogram matrix (normalized to [0, 255])
-        stft_phase: Ground truth phase from original STFT
         sr: Sample rate
         n_fft: FFT window size
         hop_length: Hop length
@@ -115,26 +107,21 @@ def log_mel_spectrogram_to_audio(log_mel, stft_phase, sr=16000, n_fft=400, hop_l
     # Convert from dB to power
     mel_spec = librosa.db_to_power(log_mel_denorm)
 
-    # Invert mel spectrogram to linear spectrogram (magnitude only)
-    stft_magnitude = librosa.feature.inverse.mel_to_stft(
+    # Invert mel spectrogram to linear spectrogram
+    spec = librosa.feature.inverse.mel_to_stft(
         mel_spec,
         sr=sr,
         n_fft=n_fft,
         fmax=8000
     )
 
-    # Combine magnitude with GT phase
-    # Ensure dimensions match
-    if stft_magnitude.shape != stft_phase.shape:
-        # Resize magnitude to match phase if needed
-        min_frames = min(stft_magnitude.shape[1], stft_phase.shape[1])
-        stft_magnitude = stft_magnitude[:, :min_frames]
-        stft_phase = stft_phase[:, :min_frames]
-
-    stft_complex = stft_magnitude * np.exp(1j * stft_phase)
-
-    # Inverse STFT to get audio
-    audio = librosa.istft(stft_complex, hop_length=hop_length, win_length=n_fft)
+    # Use Griffin-Lim to reconstruct audio
+    audio = librosa.griffinlim(
+        spec,
+        n_iter=32,
+        hop_length=hop_length,
+        win_length=n_fft
+    )
 
     # Trim or pad to target duration if specified
     if duration is not None:
@@ -775,15 +762,14 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
             return
 
         print(f"Loading audio: {input_path}")
-        M, original_audio, sr, audio_params, stft_phase = audio_to_log_mel_spectrogram(input_path)
+        M, original_audio, sr, audio_params = audio_to_log_mel_spectrogram(input_path)
         n_fft, hop_length, n_mels = audio_params
         audio_info = {
             'sr': sr,
             'n_fft': n_fft,
             'hop_length': hop_length,
             'n_mels': n_mels,
-            'original_audio': original_audio,
-            'stft_phase': stft_phase  # Save GT phase
+            'original_audio': original_audio
         }
         print(f"Spectrogram shape: {M.shape}")
     else:
@@ -853,11 +839,10 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
         if is_audio and audio_info:
             print(f"Generating audio from spectrograms...")
             target_duration = len(original_audio)
-            stft_phase = audio_info['stft_phase']
 
             # Approximation audio
             result_dict['approx_audio'] = log_mel_spectrogram_to_audio(
-                M_approx, stft_phase, audio_info['sr'], audio_info['n_fft'],
+                M_approx, audio_info['sr'], audio_info['n_fft'],
                 audio_info['hop_length'], audio_info['n_mels'], target_duration
             )
 
@@ -865,7 +850,7 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
             result_dict['left_noise_audio'] = []
             for img in left_noise_images:
                 audio = log_mel_spectrogram_to_audio(
-                    img, stft_phase, audio_info['sr'], audio_info['n_fft'],
+                    img, audio_info['sr'], audio_info['n_fft'],
                     audio_info['hop_length'], audio_info['n_mels'], target_duration
                 )
                 result_dict['left_noise_audio'].append(audio)
@@ -874,7 +859,7 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
             result_dict['right_noise_audio'] = []
             for img in right_noise_images:
                 audio = log_mel_spectrogram_to_audio(
-                    img, stft_phase, audio_info['sr'], audio_info['n_fft'],
+                    img, audio_info['sr'], audio_info['n_fft'],
                     audio_info['hop_length'], audio_info['n_mels'], target_duration
                 )
                 result_dict['right_noise_audio'].append(audio)
@@ -883,7 +868,7 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
             result_dict['original_scale_audio'] = []
             for img in original_scale_images:
                 audio = log_mel_spectrogram_to_audio(
-                    img, stft_phase, audio_info['sr'], audio_info['n_fft'],
+                    img, audio_info['sr'], audio_info['n_fft'],
                     audio_info['hop_length'], audio_info['n_mels'], target_duration
                 )
                 result_dict['original_scale_audio'].append(audio)
@@ -892,7 +877,7 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
             result_dict['right_factor_scale_audio'] = []
             for img in right_factor_scale_images:
                 audio = log_mel_spectrogram_to_audio(
-                    img, stft_phase, audio_info['sr'], audio_info['n_fft'],
+                    img, audio_info['sr'], audio_info['n_fft'],
                     audio_info['hop_length'], audio_info['n_mels'], target_duration
                 )
                 result_dict['right_factor_scale_audio'].append(audio)
