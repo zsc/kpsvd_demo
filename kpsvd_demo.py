@@ -208,10 +208,6 @@ def downscale_upscale_factor(factor, scale_factor, r, s):
         processed_image_matrix = np.array(img_up, dtype=float)
         result_matrix[:, i] = processed_image_matrix.flatten()
 
-    # If the original input was a 1D vector, return a 1D vector for consistency
-    if k == 1 and result_matrix.shape[1] == 1:
-        return result_matrix.flatten()
-
     return result_matrix
 
 def matrix_to_image(matrix):
@@ -408,10 +404,13 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
 """
 
         for j, (img, noise_level) in enumerate(zip(left_imgs, noise_levels)):
+            img_mse = np.mean((original - img)**2)
+            img_psnr = 20 * np.log10(255 / np.sqrt(img_mse)) if img_mse > 0 else float('inf')
             html_content += f"""
                 <div class="image-container">
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Left noise {j}">
                     <div class="image-label">U noise σ={noise_level}</div>
+                    <div class="stats">PSNR: {img_psnr:.2f} dB</div>
                 </div>
 """
 
@@ -426,10 +425,13 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
 """
 
         for j, (img, noise_level) in enumerate(zip(right_imgs, noise_levels)):
+            img_mse = np.mean((original - img)**2)
+            img_psnr = 20 * np.log10(255 / np.sqrt(img_mse)) if img_mse > 0 else float('inf')
             html_content += f"""
                 <div class="image-container">
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Right noise {j}">
                     <div class="image-label">V noise σ={noise_level}</div>
+                    <div class="stats">PSNR: {img_psnr:.2f} dB</div>
                 </div>
 """
 
@@ -445,10 +447,13 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
 
         original_scale_imgs = result['original_scale_images']
         for j, (img, scale) in enumerate(zip(original_scale_imgs, scale_factors)):
+            img_mse = np.mean((original - img)**2)
+            img_psnr = 20 * np.log10(255 / np.sqrt(img_mse)) if img_mse > 0 else float('inf')
             html_content += f"""
                 <div class="image-container">
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Original scale {j}">
                     <div class="image-label">Original scale {scale}×</div>
+                    <div class="stats">PSNR: {img_psnr:.2f} dB</div>
                 </div>
 """
 
@@ -464,10 +469,13 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
 
         right_scale_imgs = result['right_factor_scale_images']
         for j, (img, scale) in enumerate(zip(right_scale_imgs, scale_factors)):
+            img_mse = np.mean((original - img)**2)
+            img_psnr = 20 * np.log10(255 / np.sqrt(img_mse)) if img_mse > 0 else float('inf')
             html_content += f"""
                 <div class="image-container">
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Right factor scale {j}">
                     <div class="image-label">V scale {scale}×</div>
+                    <div class="stats">PSNR: {img_psnr:.2f} dB</div>
                 </div>
 """
 
