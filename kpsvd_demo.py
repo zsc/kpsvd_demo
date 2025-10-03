@@ -9,6 +9,8 @@ from PIL import Image
 import base64
 from io import BytesIO
 import os
+import librosa
+import soundfile as sf
 
 
 def image_to_grayscale_matrix(image_path):
@@ -28,6 +30,79 @@ def image_to_grayscale_matrix(image_path):
         print(f"Cropped from {w}x{h} to {new_w}x{new_h}")
 
     return np.array(img, dtype=float)
+
+
+def audio_to_matrix(audio_path, sr=16000):
+    """
+    Convert audio to matrix by simple binning (reshaping)
+
+    Args:
+        audio_path: Path to audio file
+        sr: Target sample rate
+
+    Returns:
+        matrix: 2D matrix from reshaped audio
+        original_shape: (original_length, sr) for reconstruction
+    """
+    # Load mono audio
+    audio, sr_orig = librosa.load(audio_path, sr=sr, mono=True)
+    original_length = len(audio)
+
+    # Calculate roughly square dimensions
+    h = int(np.sqrt(original_length))
+    w = (original_length + h - 1) // h  # Ceiling division
+
+    # Pad if necessary
+    padded_length = h * w
+    if len(audio) < padded_length:
+        audio = np.pad(audio, (0, padded_length - len(audio)), mode='constant')
+    elif len(audio) > padded_length:
+        audio = audio[:padded_length]
+
+    # Reshape to matrix
+    matrix = audio.reshape(h, w)
+
+    # Normalize to [0, 255] for consistency with image processing
+    audio_min = matrix.min()
+    audio_max = matrix.max()
+    if audio_max - audio_min > 1e-8:
+        matrix = ((matrix - audio_min) / (audio_max - audio_min)) * 255.0
+    else:
+        matrix = np.zeros_like(matrix)
+
+    print(f"Audio loaded: {original_length} samples -> {h}x{w} matrix")
+
+    return matrix, (original_length, sr, audio_min, audio_max, h, w)
+
+
+def matrix_to_audio(matrix, audio_info, output_path):
+    """
+    Convert matrix back to audio by reshaping
+
+    Args:
+        matrix: 2D matrix to convert
+        audio_info: (original_length, sr, audio_min, audio_max, h, w)
+        output_path: Path to save audio file
+    """
+    original_length, sr, audio_min, audio_max, h, w = audio_info
+
+    # Denormalize from [0, 255] back to original range
+    if audio_max - audio_min > 1e-8:
+        audio = (matrix / 255.0) * (audio_max - audio_min) + audio_min
+    else:
+        audio = np.zeros_like(matrix)
+
+    # Reshape to 1D
+    audio = audio.flatten()
+
+    # Trim to original length
+    audio = audio[:original_length]
+
+    # Save audio file
+    sf.write(output_path, audio, sr)
+    print(f"Audio saved: {output_path}")
+
+    return audio
 
 
 def kpsvd(M, k, left_scale):
@@ -228,7 +303,15 @@ def image_to_base64(img):
     return f"data:image/png;base64,{img_str}"
 
 
-def generate_html_visualization(original, all_k_results, noise_levels, scale_factors, shape_info, output_path='kpsvd_visualization.html'):
+def audio_to_base64(audio_path):
+    """Convert audio file to base64 string for HTML embedding"""
+    with open(audio_path, 'rb') as f:
+        audio_data = f.read()
+    audio_str = base64.b64encode(audio_data).decode()
+    return f"data:audio/wav;base64,{audio_str}"
+
+
+def generate_html_visualization(original, all_k_results, noise_levels, scale_factors, shape_info, is_audio=False, audio_info=None, output_path='kpsvd_visualization.html'):
     """
     Generate HTML file with all visualizations
 
@@ -241,9 +324,12 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
             - original_scale_images: List of downscale-upscale images of original
             - right_factor_scale_images: List of downscale-upscale images of right factor
             - compression_ratio: Compression ratio
+            - (if audio) audio_paths: Dict of audio file paths
         noise_levels: Noise levels used
         scale_factors: Scale factors used for downscale-upscale
         shape_info: (p, q, r, s) dimensions
+        is_audio: Whether processing audio
+        audio_info: Audio metadata tuple
         output_path: Path to save HTML file
     """
     p, q, r, s = shape_info
@@ -356,11 +442,24 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
     </div>
 
     <div class="section">
-        <h2>Original Image</h2>
+        <h2>Original {'Audio' if is_audio else 'Image'}</h2>
         <div class="image-grid">
-            <div class="image-container">
+            <div class="image-container">"""
+
+    if is_audio:
+        original_audio_path = all_k_results[k_values[0]]['audio_paths']['original']
+        html_content += f"""
+                <audio controls style="width: 100%; margin: 10px 0;">
+                    <source src="{audio_to_base64(original_audio_path)}" type="audio/wav">
+                </audio>
+                <img src="{image_to_base64(matrix_to_image(original))}" alt="Original Audio Matrix" style="margin-top: 10px;">
+                <div class="image-label">Original Audio (matrix visualization)</div>"""
+    else:
+        html_content += f"""
                 <img src="{image_to_base64(matrix_to_image(original))}" alt="Original">
-                <div class="image-label">Original Image</div>
+                <div class="image-label">Original Image</div>"""
+
+    html_content += f"""
                 <div class="stats">
                     Shape: {original.shape}<br>
                     Total elements: {m * n}
@@ -388,7 +487,16 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
         <div class="section">
             <h2>k={k} Approximation</h2>
             <div class="image-grid">
-                <div class="image-container">
+                <div class="image-container">"""
+
+        if is_audio:
+            approx_audio_path = result['audio_paths']['approximation']
+            html_content += f"""
+                    <audio controls style="width: 100%; margin: 10px 0;">
+                        <source src="{audio_to_base64(approx_audio_path)}" type="audio/wav">
+                    </audio>"""
+
+        html_content += f"""
                     <img src="{image_to_base64(matrix_to_image(approx))}" alt="Approximation k={k}">
                     <div class="image-label">k={k} Approximation</div>
                     <div class="stats">
@@ -411,7 +519,16 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
             img_mse = np.mean((original - img)**2)
             img_psnr = 20 * np.log10(255 / np.sqrt(img_mse)) if img_mse > 0 else float('inf')
             html_content += f"""
-                <div class="image-container">
+                <div class="image-container">"""
+
+            if is_audio:
+                audio_path = result['audio_paths']['left_noise'][j]
+                html_content += f"""
+                    <audio controls style="width: 100%; margin: 10px 0;">
+                        <source src="{audio_to_base64(audio_path)}" type="audio/wav">
+                    </audio>"""
+
+            html_content += f"""
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Left noise {j}">
                     <div class="image-label">U noise σ={noise_level}</div>
                     <div class="stats">PSNR: {img_psnr:.2f} dB</div>
@@ -432,7 +549,16 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
             img_mse = np.mean((original - img)**2)
             img_psnr = 20 * np.log10(255 / np.sqrt(img_mse)) if img_mse > 0 else float('inf')
             html_content += f"""
-                <div class="image-container">
+                <div class="image-container">"""
+
+            if is_audio:
+                audio_path = result['audio_paths']['right_noise'][j]
+                html_content += f"""
+                    <audio controls style="width: 100%; margin: 10px 0;">
+                        <source src="{audio_to_base64(audio_path)}" type="audio/wav">
+                    </audio>"""
+
+            html_content += f"""
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Right noise {j}">
                     <div class="image-label">V noise σ={noise_level}</div>
                     <div class="stats">PSNR: {img_psnr:.2f} dB</div>
@@ -454,7 +580,16 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
             img_mse = np.mean((original - img)**2)
             img_psnr = 20 * np.log10(255 / np.sqrt(img_mse)) if img_mse > 0 else float('inf')
             html_content += f"""
-                <div class="image-container">
+                <div class="image-container">"""
+
+            if is_audio:
+                audio_path = result['audio_paths']['original_scale'][j]
+                html_content += f"""
+                    <audio controls style="width: 100%; margin: 10px 0;">
+                        <source src="{audio_to_base64(audio_path)}" type="audio/wav">
+                    </audio>"""
+
+            html_content += f"""
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Original scale {j}">
                     <div class="image-label">Original scale {scale}×</div>
                     <div class="stats">PSNR: {img_psnr:.2f} dB</div>
@@ -476,7 +611,16 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
             img_mse = np.mean((original - img)**2)
             img_psnr = 20 * np.log10(255 / np.sqrt(img_mse)) if img_mse > 0 else float('inf')
             html_content += f"""
-                <div class="image-container">
+                <div class="image-container">"""
+
+            if is_audio:
+                audio_path = result['audio_paths']['right_factor_scale'][j]
+                html_content += f"""
+                    <audio controls style="width: 100%; margin: 10px 0;">
+                        <source src="{audio_to_base64(audio_path)}" type="audio/wav">
+                    </audio>"""
+
+            html_content += f"""
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Right factor scale {j}">
                     <div class="image-label">V scale {scale}×</div>
                     <div class="stats">PSNR: {img_psnr:.2f} dB</div>
@@ -532,12 +676,12 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
     print(f"HTML visualization saved to: {output_path}")
 
 
-def main(image_path, left_scale=None, k_values=None, noise_levels=None, scale_factors=None, output_html='kpsvd_visualization.html'):
+def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_factors=None, output_html='kpsvd_visualization.html'):
     """
     Main function to run KPSVD demo
 
     Args:
-        image_path: Path to input image
+        input_path: Path to input image or audio file
         k_values: List of k ranks to compute (default: [5, 10, 20, 50])
         noise_levels: List of noise standard deviations (default: [5, 10, 20])
         scale_factors: List of scale factors for downscale-upscale (default: [1.0, 0.5, 0.25, 0.125])
@@ -550,9 +694,28 @@ def main(image_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
     if scale_factors is None:
         scale_factors = [1.0, 0.5, 0.25, 0.125]
 
-    print(f"Loading image: {image_path}")
-    M = image_to_grayscale_matrix(image_path)
-    print(f"Image shape: {M.shape}")
+    # Detect if input is audio or image
+    audio_extensions = ('.wav', '.mp3', '.flac', '.ogg', '.m4a')
+    is_audio = input_path.lower().endswith(audio_extensions)
+    audio_info = None
+
+    if is_audio:
+        print(f"Loading audio: {input_path}")
+        M, audio_info = audio_to_matrix(input_path)
+        print(f"Audio matrix shape: {M.shape}")
+
+        # Create output directory for audio files
+        audio_dir = 'audio_outputs'
+        os.makedirs(audio_dir, exist_ok=True)
+
+        # Save original audio as reference
+        original_audio_path = os.path.join(audio_dir, 'original.wav')
+        matrix_to_audio(M, audio_info, original_audio_path)
+    else:
+        print(f"Loading image: {input_path}")
+        M = image_to_grayscale_matrix(input_path)
+        print(f"Image shape: {M.shape}")
+
     m, n = M.shape
 
     # Store results for all k values
@@ -602,17 +765,58 @@ def main(image_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
             img = reconstruct_from_kpsvd(U_k, S_k, scaled_V.T, shape_info)
             right_factor_scale_images.append(img)
 
+        # Generate audio files if processing audio
+        audio_paths = None
+        if is_audio:
+            print(f"Generating audio files for k={k}...")
+            audio_paths = {
+                'original': original_audio_path,
+                'approximation': os.path.join(audio_dir, f'k{k}_approx.wav'),
+                'left_noise': [],
+                'right_noise': [],
+                'original_scale': [],
+                'right_factor_scale': []
+            }
+
+            # Approximation audio
+            matrix_to_audio(M_approx, audio_info, audio_paths['approximation'])
+
+            # Left noise audio
+            for j, img in enumerate(left_noise_images):
+                path = os.path.join(audio_dir, f'k{k}_left_noise_{j}.wav')
+                matrix_to_audio(img, audio_info, path)
+                audio_paths['left_noise'].append(path)
+
+            # Right noise audio
+            for j, img in enumerate(right_noise_images):
+                path = os.path.join(audio_dir, f'k{k}_right_noise_{j}.wav')
+                matrix_to_audio(img, audio_info, path)
+                audio_paths['right_noise'].append(path)
+
+            # Original scale audio
+            for j, img in enumerate(original_scale_images):
+                path = os.path.join(audio_dir, f'k{k}_original_scale_{j}.wav')
+                matrix_to_audio(img, audio_info, path)
+                audio_paths['original_scale'].append(path)
+
+            # Right factor scale audio
+            for j, img in enumerate(right_factor_scale_images):
+                path = os.path.join(audio_dir, f'k{k}_right_factor_scale_{j}.wav')
+                matrix_to_audio(img, audio_info, path)
+                audio_paths['right_factor_scale'].append(path)
+
         all_k_results[k] = {
             'approximation': M_approx,
             'left_noise_images': left_noise_images,
             'right_noise_images': right_noise_images,
             'original_scale_images': original_scale_images,
             'right_factor_scale_images': right_factor_scale_images,
-            'compression_ratio': compression_ratio
+            'compression_ratio': compression_ratio,
+            'audio_paths': audio_paths
         }
 
     print(f"\nGenerating HTML visualization...")
-    generate_html_visualization(M, all_k_results, noise_levels, scale_factors, shape_info, output_html)
+    generate_html_visualization(M, all_k_results, noise_levels, scale_factors, shape_info, is_audio, audio_info, output_html)
 
     print("\nDone!")
 
@@ -621,15 +825,16 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 3:
-        print("Usage: python kpsvd_demo.py <left_scale> <image_path> [k_values...] [--noise noise_levels...] [--scale scale_factors...]")
-        print("Example: python kpsvd_demo.py 1 image.jpg 5 10 20 50 --noise 5 10 20 --scale 1.0 0.5 0.25 0.125")
+        print("Usage: python kpsvd_demo.py <left_scale> <input_path> [k_values...] [--noise noise_levels...] [--scale scale_factors...]")
+        print("Example (image): python kpsvd_demo.py 1 image.jpg 5 10 20 50 --noise 5 10 20 --scale 1.0 0.5 0.25 0.125")
+        print("Example (audio): python kpsvd_demo.py 1 audio.wav 5 10 20 50 --noise 5 10 20 --scale 1.0 0.5 0.25 0.125")
         print("Default k values: [5, 10, 20, 50]")
         print("Default noise levels: [5, 10, 20]")
         print("Default scale factors: [1.0, 0.5, 0.25, 0.125]")
         sys.exit(1)
 
     left_scale = int(sys.argv[1])
-    image_path = sys.argv[2]
+    input_path = sys.argv[2]
 
     # Parse k values, noise levels, and scale factors
     k_values = []
@@ -657,4 +862,4 @@ if __name__ == "__main__":
     noise_levels = noise_levels if noise_levels else None
     scale_factors = scale_factors if scale_factors else None
 
-    main(image_path, left_scale, k_values, noise_levels, scale_factors)
+    main(input_path, left_scale, k_values, noise_levels, scale_factors)
