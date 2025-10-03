@@ -123,6 +123,67 @@ def add_noise_to_factor(factor, noise_levels):
     return noisy_factors
 
 
+def downscale_upscale_matrix(matrix, scale_factor):
+    """
+    Downscale then upscale matrix back to original size
+
+    Args:
+        matrix: Input matrix
+        scale_factor: Scale factor (e.g., 0.5 for half size)
+
+    Returns:
+        Matrix after downscale->upscale operation
+    """
+    img = matrix_to_image(matrix)
+    original_size = img.size
+
+    if scale_factor >= 1.0:
+        return matrix
+
+    # Downscale
+    new_size = (int(img.width * scale_factor), int(img.height * scale_factor))
+    if new_size[0] < 1 or new_size[1] < 1:
+        new_size = (1, 1)
+
+    img_down = img.resize(new_size, Image.BILINEAR)
+
+    # Upscale back to original size
+    img_up = img_down.resize(original_size, Image.BILINEAR)
+
+    return np.array(img_up, dtype=float)
+
+
+def downscale_upscale_factor(factor, scale_factor, target_shape):
+    """
+    Downscale then upscale a factor matrix
+
+    Args:
+        factor: Input factor matrix
+        scale_factor: Scale factor (e.g., 0.5 for half size)
+        target_shape: Target shape to return to
+
+    Returns:
+        Factor after downscale->upscale operation
+    """
+    if scale_factor >= 1.0:
+        return factor
+
+    img = Image.fromarray(factor.astype(np.float32))
+    original_size = img.size
+
+    # Downscale
+    new_size = (int(img.width * scale_factor), int(img.height * scale_factor))
+    if new_size[0] < 1 or new_size[1] < 1:
+        new_size = (1, 1)
+
+    img_down = img.resize(new_size, Image.BILINEAR)
+
+    # Upscale back to original size
+    img_up = img_down.resize(original_size, Image.BILINEAR)
+
+    return np.array(img_up, dtype=float)
+
+
 def matrix_to_image(matrix):
     """Convert matrix to PIL Image, clipping to [0, 255]"""
     clipped = np.clip(matrix, 0, 255).astype(np.uint8)
@@ -137,7 +198,7 @@ def image_to_base64(img):
     return f"data:image/png;base64,{img_str}"
 
 
-def generate_html_visualization(original, all_k_results, noise_levels, shape_info, output_path='kpsvd_visualization.html'):
+def generate_html_visualization(original, all_k_results, noise_levels, scale_factors, shape_info, output_path='kpsvd_visualization.html'):
     """
     Generate HTML file with all visualizations
 
@@ -147,8 +208,11 @@ def generate_html_visualization(original, all_k_results, noise_levels, shape_inf
             - approximation: k-rank approximation
             - left_noise_images: List of images with left factor noise
             - right_noise_images: List of images with right factor noise
+            - original_scale_images: List of downscale-upscale images of original
+            - right_factor_scale_images: List of downscale-upscale images of right factor
             - compression_ratio: Compression ratio
         noise_levels: Noise levels used
+        scale_factors: Scale factors used for downscale-upscale
         shape_info: (p, q, r, s) dimensions
         output_path: Path to save HTML file
     """
@@ -342,6 +406,44 @@ def generate_html_visualization(original, all_k_results, noise_levels, shape_inf
         html_content += """
             </div>
         </div>
+
+        <div class="section">
+            <h2>Original Image Downscale-Upscale Series (k=""" + str(k) + """)</h2>
+            <p>Original image downscaled then upscaled back, scale factors: """ + str(scale_factors) + """</p>
+            <div class="image-grid">
+"""
+
+        original_scale_imgs = result['original_scale_images']
+        for j, (img, scale) in enumerate(zip(original_scale_imgs, scale_factors)):
+            html_content += f"""
+                <div class="image-container">
+                    <img src="{image_to_base64(matrix_to_image(img))}" alt="Original scale {j}">
+                    <div class="image-label">Original scale {scale}×</div>
+                </div>
+"""
+
+        html_content += """
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Right Factor Downscale-Upscale Series (k=""" + str(k) + """)</h2>
+            <p>Right factor (V) downscaled then upscaled back, scale factors: """ + str(scale_factors) + """</p>
+            <div class="image-grid">
+"""
+
+        right_scale_imgs = result['right_factor_scale_images']
+        for j, (img, scale) in enumerate(zip(right_scale_imgs, scale_factors)):
+            html_content += f"""
+                <div class="image-container">
+                    <img src="{image_to_base64(matrix_to_image(img))}" alt="Right factor scale {j}">
+                    <div class="image-label">V scale {scale}×</div>
+                </div>
+"""
+
+        html_content += """
+            </div>
+        </div>
     </div>
 """
 
@@ -388,7 +490,7 @@ def generate_html_visualization(original, all_k_results, noise_levels, shape_inf
     print(f"HTML visualization saved to: {output_path}")
 
 
-def main(image_path, k_values=None, noise_levels=None, output_html='kpsvd_visualization.html'):
+def main(image_path, k_values=None, noise_levels=None, scale_factors=None, output_html='kpsvd_visualization.html'):
     """
     Main function to run KPSVD demo
 
@@ -396,12 +498,15 @@ def main(image_path, k_values=None, noise_levels=None, output_html='kpsvd_visual
         image_path: Path to input image
         k_values: List of k ranks to compute (default: [5, 10, 20, 50])
         noise_levels: List of noise standard deviations (default: [5, 10, 20])
+        scale_factors: List of scale factors for downscale-upscale (default: [1.0, 0.5, 0.25, 0.125])
         output_html: Output HTML file path
     """
     if k_values is None:
         k_values = [5, 10, 20, 50]
     if noise_levels is None:
         noise_levels = [5, 10, 20]
+    if scale_factors is None:
+        scale_factors = [1.0, 0.5, 0.25, 0.125]
 
     print(f"Loading image: {image_path}")
     M = image_to_grayscale_matrix(image_path)
@@ -442,15 +547,30 @@ def main(image_path, k_values=None, noise_levels=None, output_html='kpsvd_visual
             img = reconstruct_from_kpsvd(U_k, S_k, noisy_V.T, shape_info)
             right_noise_images.append(img)
 
+        print(f"Generating original downscale-upscale series (scales: {scale_factors})...")
+        original_scale_images = []
+        for scale in scale_factors:
+            img = downscale_upscale_matrix(M, scale)
+            original_scale_images.append(img)
+
+        print(f"Generating right factor downscale-upscale series (scales: {scale_factors})...")
+        right_factor_scale_images = []
+        for scale in scale_factors:
+            scaled_V = downscale_upscale_factor(Vt_k.T, scale, Vt_k.T.shape)
+            img = reconstruct_from_kpsvd(U_k, S_k, scaled_V.T, shape_info)
+            right_factor_scale_images.append(img)
+
         all_k_results[k] = {
             'approximation': M_approx,
             'left_noise_images': left_noise_images,
             'right_noise_images': right_noise_images,
+            'original_scale_images': original_scale_images,
+            'right_factor_scale_images': right_factor_scale_images,
             'compression_ratio': compression_ratio
         }
 
     print(f"\nGenerating HTML visualization...")
-    generate_html_visualization(M, all_k_results, noise_levels, shape_info, output_html)
+    generate_html_visualization(M, all_k_results, noise_levels, scale_factors, shape_info, output_html)
 
     print("\nDone!")
 
@@ -459,30 +579,39 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python kpsvd_demo.py <image_path> [k_values...] [--noise noise_levels...]")
-        print("Example: python kpsvd_demo.py image.jpg 5 10 20 50 --noise 5 10 20")
+        print("Usage: python kpsvd_demo.py <image_path> [k_values...] [--noise noise_levels...] [--scale scale_factors...]")
+        print("Example: python kpsvd_demo.py image.jpg 5 10 20 50 --noise 5 10 20 --scale 1.0 0.5 0.25 0.125")
         print("Default k values: [5, 10, 20, 50]")
         print("Default noise levels: [5, 10, 20]")
+        print("Default scale factors: [1.0, 0.5, 0.25, 0.125]")
         sys.exit(1)
 
     image_path = sys.argv[1]
 
-    # Parse k values and noise levels
+    # Parse k values, noise levels, and scale factors
     k_values = []
     noise_levels = []
+    scale_factors = []
 
     i = 2
-    while i < len(sys.argv) and sys.argv[i] != '--noise':
+    while i < len(sys.argv) and sys.argv[i] not in ['--noise', '--scale']:
         k_values.append(int(sys.argv[i]))
         i += 1
 
     if i < len(sys.argv) and sys.argv[i] == '--noise':
         i += 1
-        while i < len(sys.argv):
+        while i < len(sys.argv) and sys.argv[i] != '--scale':
             noise_levels.append(float(sys.argv[i]))
+            i += 1
+
+    if i < len(sys.argv) and sys.argv[i] == '--scale':
+        i += 1
+        while i < len(sys.argv):
+            scale_factors.append(float(sys.argv[i]))
             i += 1
 
     k_values = k_values if k_values else None
     noise_levels = noise_levels if noise_levels else None
+    scale_factors = scale_factors if scale_factors else None
 
-    main(image_path, k_values, noise_levels)
+    main(image_path, k_values, noise_levels, scale_factors)
