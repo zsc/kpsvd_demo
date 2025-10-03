@@ -10,8 +10,20 @@ from pathlib import Path
 
 
 def load_and_convert_to_grayscale(image_path):
-    """Load image and convert to grayscale"""
+    """Load image, crop to multiples of 32, and convert to grayscale"""
     img = Image.open(image_path)
+
+    # Crop to multiples of 32
+    w, h = img.size
+    new_w = (w // 32) * 32
+    new_h = (h // 32) * 32
+
+    if new_w > 0 and new_h > 0:
+        # Center crop
+        left = (w - new_w) // 2
+        top = (h - new_h) // 2
+        img = img.crop((left, top, left + new_w, top + new_h))
+
     gray_img = img.convert('L')
     return np.array(gray_img, dtype=float)
 
@@ -127,70 +139,70 @@ def clip_to_image_range(img_array):
     """Clip array values to valid image range [0, 255]"""
     return np.clip(img_array, 0, 255).astype(np.uint8)
 
-
 def generate_html(original, gray, approx, left_noise_series, right_noise_series,
                   k1, k2, noise_levels, output_path):
     """Generate HTML visualization"""
 
+    # CORRECTED: Escaped curly braces {{ and }} in the <style> block
     html = """<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <title>KPSVD Image Approximation with Noise</title>
     <style>
-        body {
+        body {{
             font-family: Arial, sans-serif;
             margin: 20px;
             background-color: #f5f5f5;
-        }
-        .container {
+        }}
+        .container {{
             max-width: 1400px;
             margin: 0 auto;
             background-color: white;
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        h1 {
+        }}
+        h1 {{
             color: #333;
             text-align: center;
-        }
-        h2 {
+        }}
+        h2 {{
             color: #666;
             border-bottom: 2px solid #ddd;
             padding-bottom: 10px;
             margin-top: 30px;
-        }
-        .image-grid {
+        }}
+        .image-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 20px;
             margin: 20px 0;
-        }
-        .image-item {
+        }}
+        .image-item {{
             text-align: center;
-        }
-        .image-item img {
+        }}
+        .image-item img {{
             max-width: 100%;
             height: auto;
             border: 1px solid #ddd;
             border-radius: 4px;
-        }
-        .image-item p {
+        }}
+        .image-item p {{
             margin-top: 10px;
             color: #666;
             font-size: 14px;
-        }
-        .params {
+        }}
+        .params {{
             background-color: #f9f9f9;
             padding: 15px;
             border-radius: 4px;
             margin: 20px 0;
-        }
-        .params p {
+        }}
+        .params p {{
             margin: 5px 0;
             color: #555;
-        }
+        }}
     </style>
 </head>
 <body>
@@ -251,7 +263,6 @@ def generate_html(original, gray, approx, left_noise_series, right_noise_series,
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
-
 
 def main():
     parser = argparse.ArgumentParser(description='KPSVD Image Approximation with Noise Visualization')
