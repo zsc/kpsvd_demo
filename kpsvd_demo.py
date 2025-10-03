@@ -137,27 +137,31 @@ def image_to_base64(img):
     return f"data:image/png;base64,{img_str}"
 
 
-def generate_html_visualization(original, approximation, left_noise_images, right_noise_images,
-                                 k, noise_levels, output_path='kpsvd_visualization.html'):
+def generate_html_visualization(original, all_k_results, noise_levels, shape_info, output_path='kpsvd_visualization.html'):
     """
     Generate HTML file with all visualizations
 
     Args:
         original: Original grayscale matrix
-        approximation: k-rank approximation
-        left_noise_images: List of images with left factor noise
-        right_noise_images: List of images with right factor noise
-        k: Rank used for approximation
+        all_k_results: Dict with k values as keys, each containing:
+            - approximation: k-rank approximation
+            - left_noise_images: List of images with left factor noise
+            - right_noise_images: List of images with right factor noise
+            - compression_ratio: Compression ratio
         noise_levels: Noise levels used
+        shape_info: (p, q, r, s) dimensions
         output_path: Path to save HTML file
     """
+    p, q, r, s = shape_info
+    m, n = original.shape
+    k_values = sorted(all_k_results.keys())
     html_content = f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KPSVD Visualization (k={k})</title>
+    <title>KPSVD Visualization</title>
     <style>
         body {{
             font-family: Arial, sans-serif;
@@ -175,6 +179,30 @@ def generate_html_visualization(original, approximation, left_noise_images, righ
             margin: 20px 0;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .controls {{
+            background: #e8f4f8;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }}
+        .slider-container {{
+            margin: 15px 0;
+        }}
+        .slider-container label {{
+            font-weight: bold;
+            display: block;
+            margin-bottom: 5px;
+        }}
+        .slider-container input[type="range"] {{
+            width: 100%;
+            max-width: 500px;
+        }}
+        .slider-value {{
+            display: inline-block;
+            margin-left: 10px;
+            font-weight: bold;
+            color: #0066cc;
         }}
         .image-grid {{
             display: grid;
@@ -201,6 +229,13 @@ def generate_html_visualization(original, approximation, left_noise_images, righ
             border-radius: 4px;
             margin-top: 10px;
             font-size: 0.9em;
+            text-align: left;
+        }}
+        .k-section {{
+            display: none;
+        }}
+        .k-section.active {{
+            display: block;
         }}
     </style>
 </head>
@@ -208,60 +243,109 @@ def generate_html_visualization(original, approximation, left_noise_images, righ
     <h1>KPSVD Visualization: Van Loan-Pitsianis Method</h1>
 
     <div class="section">
-        <h2>Original and k-rank Approximation (k={k})</h2>
+        <h2>Parameters</h2>
+        <div class="stats">
+            <strong>Original Image:</strong> {m} × {n}<br>
+            <strong>KPSVD Dimensions:</strong> p={p}, q={q}, r={r}, s={s}<br>
+            <strong>Rearranged Matrix R(M):</strong> {p*q} × {r*s}
+        </div>
+    </div>
+
+    <div class="section controls">
+        <div class="slider-container">
+            <label for="k-slider">Rank k: <span class="slider-value" id="k-value">{k_values[0]}</span></label>
+            <input type="range" id="k-slider" min="0" max="{len(k_values)-1}" value="0" step="1">
+            <div style="margin-top: 5px; color: #666; font-size: 0.9em;">
+                Available k values: {', '.join(map(str, k_values))}
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Original Image</h2>
         <div class="image-grid">
             <div class="image-container">
                 <img src="{image_to_base64(matrix_to_image(original))}" alt="Original">
                 <div class="image-label">Original Image</div>
-                <div class="stats">Shape: {original.shape}</div>
-            </div>
-            <div class="image-container">
-                <img src="{image_to_base64(matrix_to_image(approximation))}" alt="Approximation">
-                <div class="image-label">k={k} Approximation</div>
                 <div class="stats">
-                    MSE: {np.mean((original - approximation)**2):.2f}<br>
-                    PSNR: {20 * np.log10(255 / np.sqrt(np.mean((original - approximation)**2))):.2f} dB
+                    Shape: {original.shape}<br>
+                    Total elements: {m * n}
                 </div>
             </div>
         </div>
     </div>
-
-    <div class="section">
-        <h2>Left Factor Noise Series</h2>
-        <p>Noise added to U (left factor), noise levels: {noise_levels}</p>
-        <div class="image-grid">
 """
 
-    for i, (img, noise_level) in enumerate(zip(left_noise_images, noise_levels)):
+    # Generate sections for each k value
+    for i, k in enumerate(k_values):
+        result = all_k_results[k]
+        approx = result['approximation']
+        left_imgs = result['left_noise_images']
+        right_imgs = result['right_noise_images']
+        compression = result['compression_ratio']
+
+        mse = np.mean((original - approx)**2)
+        psnr = 20 * np.log10(255 / np.sqrt(mse)) if mse > 0 else float('inf')
+
+        active_class = 'active' if i == 0 else ''
+
         html_content += f"""
-            <div class="image-container">
-                <img src="{image_to_base64(matrix_to_image(img))}" alt="Left noise {i}">
-                <div class="image-label">U noise σ={noise_level}</div>
+    <div class="k-section {active_class}" data-k-index="{i}">
+        <div class="section">
+            <h2>k={k} Approximation</h2>
+            <div class="image-grid">
+                <div class="image-container">
+                    <img src="{image_to_base64(matrix_to_image(approx))}" alt="Approximation k={k}">
+                    <div class="image-label">k={k} Approximation</div>
+                    <div class="stats">
+                        <strong>Compression Ratio:</strong> {compression:.2f}×<br>
+                        <strong>Storage:</strong> {p*q*k + k + r*s*k} elements (vs {m*n} original)<br>
+                        <strong>MSE:</strong> {mse:.2f}<br>
+                        <strong>PSNR:</strong> {psnr:.2f} dB
+                    </div>
+                </div>
             </div>
+        </div>
+
+        <div class="section">
+            <h2>Left Factor Noise Series (k={k})</h2>
+            <p>Noise added to U (left factor), noise levels: {noise_levels}</p>
+            <div class="image-grid">
+"""
+
+        for j, (img, noise_level) in enumerate(zip(left_imgs, noise_levels)):
+            html_content += f"""
+                <div class="image-container">
+                    <img src="{image_to_base64(matrix_to_image(img))}" alt="Left noise {j}">
+                    <div class="image-label">U noise σ={noise_level}</div>
+                </div>
+"""
+
+        html_content += """
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Right Factor Noise Series (k=""" + str(k) + """)</h2>
+            <p>Noise added to V (right factor), noise levels: """ + str(noise_levels) + """</p>
+            <div class="image-grid">
+"""
+
+        for j, (img, noise_level) in enumerate(zip(right_imgs, noise_levels)):
+            html_content += f"""
+                <div class="image-container">
+                    <img src="{image_to_base64(matrix_to_image(img))}" alt="Right noise {j}">
+                    <div class="image-label">V noise σ={noise_level}</div>
+                </div>
+"""
+
+        html_content += """
+            </div>
+        </div>
+    </div>
 """
 
     html_content += """
-        </div>
-    </div>
-
-    <div class="section">
-        <h2>Right Factor Noise Series</h2>
-        <p>Noise added to V (right factor), noise levels: """ + str(noise_levels) + """</p>
-        <div class="image-grid">
-"""
-
-    for i, (img, noise_level) in enumerate(zip(right_noise_images, noise_levels)):
-        html_content += f"""
-            <div class="image-container">
-                <img src="{image_to_base64(matrix_to_image(img))}" alt="Right noise {i}">
-                <div class="image-label">V noise σ={noise_level}</div>
-            </div>
-"""
-
-    html_content += """
-        </div>
-    </div>
-
     <div class="section">
         <h2>Method Description</h2>
         <p><strong>KPSVD (Kronecker Product SVD)</strong> using the Van Loan-Pitsianis method:</p>
@@ -271,7 +355,29 @@ def generate_html_visualization(original, approximation, left_noise_images, righ
             <li>Reconstruct approximation from k-rank factors</li>
             <li>Add Gaussian noise to left (U) and right (V) factors separately</li>
         </ol>
+        <p><strong>Compression Ratio:</strong> Original size / Compressed size = (m×n) / (p×q×k + k + r×s×k)</p>
     </div>
+
+    <script>
+        const slider = document.getElementById('k-slider');
+        const kValue = document.getElementById('k-value');
+        const kSections = document.querySelectorAll('.k-section');
+        const kValues = [""" + ','.join(map(str, k_values)) + """];
+
+        slider.addEventListener('input', function() {
+            const index = parseInt(this.value);
+            kValue.textContent = kValues[index];
+
+            // Hide all sections
+            kSections.forEach(section => section.classList.remove('active'));
+
+            // Show selected section
+            const selectedSection = document.querySelector(`[data-k-index="${index}"]`);
+            if (selectedSection) {
+                selectedSection.classList.add('active');
+            }
+        });
+    </script>
 </body>
 </html>
 """
@@ -282,47 +388,69 @@ def generate_html_visualization(original, approximation, left_noise_images, righ
     print(f"HTML visualization saved to: {output_path}")
 
 
-def main(image_path, k=10, noise_levels=None, output_html='kpsvd_visualization.html'):
+def main(image_path, k_values=None, noise_levels=None, output_html='kpsvd_visualization.html'):
     """
     Main function to run KPSVD demo
 
     Args:
         image_path: Path to input image
-        k: Rank for approximation
+        k_values: List of k ranks to compute (default: [5, 10, 20, 50])
         noise_levels: List of noise standard deviations (default: [5, 10, 20])
         output_html: Output HTML file path
     """
+    if k_values is None:
+        k_values = [5, 10, 20, 50]
     if noise_levels is None:
         noise_levels = [5, 10, 20]
 
     print(f"Loading image: {image_path}")
     M = image_to_grayscale_matrix(image_path)
     print(f"Image shape: {M.shape}")
+    m, n = M.shape
 
-    print(f"\nRunning KPSVD with k={k}...")
-    U_k, S_k, Vt_k, shape_info = kpsvd(M, k)
-    print(f"KPSVD factors: U_k {U_k.shape}, S_k {S_k.shape}, Vt_k {Vt_k.shape}")
+    # Store results for all k values
+    all_k_results = {}
+    shape_info = None
 
-    print("\nReconstructing k-rank approximation...")
-    M_approx = reconstruct_from_kpsvd(U_k, S_k, Vt_k, shape_info)
+    for k in k_values:
+        print(f"\nRunning KPSVD with k={k}...")
+        U_k, S_k, Vt_k, shape_info = kpsvd(M, k)
+        print(f"KPSVD factors: U_k {U_k.shape}, S_k {S_k.shape}, Vt_k {Vt_k.shape}")
 
-    print(f"\nGenerating left factor noise series (levels: {noise_levels})...")
-    left_noisy_factors = add_noise_to_factor(U_k, noise_levels)
-    left_noise_images = []
-    for noisy_U in left_noisy_factors:
-        img = reconstruct_from_kpsvd(noisy_U, S_k, Vt_k, shape_info)
-        left_noise_images.append(img)
+        print(f"Reconstructing k={k} approximation...")
+        M_approx = reconstruct_from_kpsvd(U_k, S_k, Vt_k, shape_info)
 
-    print(f"Generating right factor noise series (levels: {noise_levels})...")
-    right_noisy_factors = add_noise_to_factor(Vt_k.T, noise_levels)
-    right_noise_images = []
-    for noisy_V in right_noisy_factors:
-        img = reconstruct_from_kpsvd(U_k, S_k, noisy_V.T, shape_info)
-        right_noise_images.append(img)
+        # Calculate compression ratio
+        p, q, r, s = shape_info
+        original_size = m * n
+        compressed_size = p * q * k + k + r * s * k
+        compression_ratio = original_size / compressed_size
+
+        print(f"Compression ratio: {compression_ratio:.2f}×")
+
+        print(f"Generating left factor noise series (levels: {noise_levels})...")
+        left_noisy_factors = add_noise_to_factor(U_k, noise_levels)
+        left_noise_images = []
+        for noisy_U in left_noisy_factors:
+            img = reconstruct_from_kpsvd(noisy_U, S_k, Vt_k, shape_info)
+            left_noise_images.append(img)
+
+        print(f"Generating right factor noise series (levels: {noise_levels})...")
+        right_noisy_factors = add_noise_to_factor(Vt_k.T, noise_levels)
+        right_noise_images = []
+        for noisy_V in right_noisy_factors:
+            img = reconstruct_from_kpsvd(U_k, S_k, noisy_V.T, shape_info)
+            right_noise_images.append(img)
+
+        all_k_results[k] = {
+            'approximation': M_approx,
+            'left_noise_images': left_noise_images,
+            'right_noise_images': right_noise_images,
+            'compression_ratio': compression_ratio
+        }
 
     print(f"\nGenerating HTML visualization...")
-    generate_html_visualization(M, M_approx, left_noise_images, right_noise_images,
-                                k, noise_levels, output_html)
+    generate_html_visualization(M, all_k_results, noise_levels, shape_info, output_html)
 
     print("\nDone!")
 
@@ -331,12 +459,30 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python kpsvd_demo.py <image_path> [k] [noise_levels...]")
-        print("Example: python kpsvd_demo.py image.jpg 10 5 10 20")
+        print("Usage: python kpsvd_demo.py <image_path> [k_values...] [--noise noise_levels...]")
+        print("Example: python kpsvd_demo.py image.jpg 5 10 20 50 --noise 5 10 20")
+        print("Default k values: [5, 10, 20, 50]")
+        print("Default noise levels: [5, 10, 20]")
         sys.exit(1)
 
     image_path = sys.argv[1]
-    k = int(sys.argv[2]) if len(sys.argv) > 2 else 10
-    noise_levels = [float(x) for x in sys.argv[3:]] if len(sys.argv) > 3 else [5, 10, 20]
 
-    main(image_path, k, noise_levels)
+    # Parse k values and noise levels
+    k_values = []
+    noise_levels = []
+
+    i = 2
+    while i < len(sys.argv) and sys.argv[i] != '--noise':
+        k_values.append(int(sys.argv[i]))
+        i += 1
+
+    if i < len(sys.argv) and sys.argv[i] == '--noise':
+        i += 1
+        while i < len(sys.argv):
+            noise_levels.append(float(sys.argv[i]))
+            i += 1
+
+    k_values = k_values if k_values else None
+    noise_levels = noise_levels if noise_levels else None
+
+    main(image_path, k_values, noise_levels)
