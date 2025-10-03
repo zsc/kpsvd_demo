@@ -30,7 +30,7 @@ def image_to_grayscale_matrix(image_path):
     return np.array(img, dtype=float)
 
 
-def kpsvd(M, k):
+def kpsvd(M, k, left_scale):
     """
     Kronecker Product SVD using Van Loan-Pitsianis method
 
@@ -53,6 +53,10 @@ def kpsvd(M, k):
         p -= 1
     while n % q != 0 and q > 1:
         q -= 1
+
+    if left_scale is not None:
+        p *= left_scale 
+        q *= left_scale
 
     r = m // p
     s = n // q
@@ -528,7 +532,7 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
     print(f"HTML visualization saved to: {output_path}")
 
 
-def main(image_path, k_values=None, noise_levels=None, scale_factors=None, output_html='kpsvd_visualization.html'):
+def main(image_path, left_scale=None, k_values=None, noise_levels=None, scale_factors=None, output_html='kpsvd_visualization.html'):
     """
     Main function to run KPSVD demo
 
@@ -557,7 +561,7 @@ def main(image_path, k_values=None, noise_levels=None, scale_factors=None, outpu
 
     for k in k_values:
         print(f"\nRunning KPSVD with k={k}...")
-        U_k, S_k, Vt_k, shape_info = kpsvd(M, k)
+        U_k, S_k, Vt_k, shape_info = kpsvd(M, k, left_scale)
         print(f"KPSVD factors: U_k {U_k.shape}, S_k {S_k.shape}, Vt_k {Vt_k.shape}")
 
         print(f"Reconstructing k={k} approximation...")
@@ -616,22 +620,23 @@ def main(image_path, k_values=None, noise_levels=None, scale_factors=None, outpu
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
-        print("Usage: python kpsvd_demo.py <image_path> [k_values...] [--noise noise_levels...] [--scale scale_factors...]")
-        print("Example: python kpsvd_demo.py image.jpg 5 10 20 50 --noise 5 10 20 --scale 1.0 0.5 0.25 0.125")
+    if len(sys.argv) < 3:
+        print("Usage: python kpsvd_demo.py <left_scale> <image_path> [k_values...] [--noise noise_levels...] [--scale scale_factors...]")
+        print("Example: python kpsvd_demo.py 1 image.jpg 5 10 20 50 --noise 5 10 20 --scale 1.0 0.5 0.25 0.125")
         print("Default k values: [5, 10, 20, 50]")
         print("Default noise levels: [5, 10, 20]")
         print("Default scale factors: [1.0, 0.5, 0.25, 0.125]")
         sys.exit(1)
 
-    image_path = sys.argv[1]
+    left_scale = int(sys.argv[1])
+    image_path = sys.argv[2]
 
     # Parse k values, noise levels, and scale factors
     k_values = []
     noise_levels = []
     scale_factors = []
 
-    i = 2
+    i = 3
     while i < len(sys.argv) and sys.argv[i] not in ['--noise', '--scale']:
         k_values.append(int(sys.argv[i]))
         i += 1
@@ -652,4 +657,4 @@ if __name__ == "__main__":
     noise_levels = noise_levels if noise_levels else None
     scale_factors = scale_factors if scale_factors else None
 
-    main(image_path, k_values, noise_levels, scale_factors)
+    main(image_path, left_scale, k_values, noise_levels, scale_factors)
