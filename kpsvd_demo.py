@@ -153,36 +153,66 @@ def downscale_upscale_matrix(matrix, scale_factor):
     return np.array(img_up, dtype=float)
 
 
-def downscale_upscale_factor(factor, scale_factor, target_shape):
+def downscale_upscale_factor(factor, scale_factor, r, s):
     """
-    Downscale then upscale a factor matrix
+    Downscale then upscale a factor matrix by treating each of its k columns
+    as a separate (r, s) image.
 
     Args:
-        factor: Input factor matrix
-        scale_factor: Scale factor (e.g., 0.5 for half size)
-        target_shape: Target shape to return to
+        factor: Input factor matrix of shape (r*s, k).
+        scale_factor: Scale factor for resizing (e.g., 0.5 for half size).
+        r: The number of rows for the reshaped image-like blocks.
+        s: The number of columns for the reshaped image-like blocks.
 
     Returns:
-        Factor after downscale->upscale operation
+        Factor matrix of shape (r*s, k) after downscale->upscale operation.
     """
+    # If no scaling is needed, return the original factor
     if scale_factor >= 1.0:
         return factor
 
-    img = Image.fromarray(factor.astype(np.float32))
-    original_size = img.size
+    # Get the number of columns (k) from the factor's shape
+    # This also handles the case where the factor might be a 1D array (k=1)
+    if factor.ndim == 1:
+        k = 1
+        factor = factor.reshape(-1, 1) # Ensure it's a column vector
+    else:
+        k = factor.shape[1]
 
-    # Downscale
-    new_size = (int(img.width * scale_factor), int(img.height * scale_factor))
-    if new_size[0] < 1 or new_size[1] < 1:
-        new_size = (1, 1)
+    # Pre-allocate the result matrix for efficiency
+    result_matrix = np.zeros_like(factor)
+    original_pil_size = (s, r) # PIL's size is (width, height), which corresponds to (s, r)
 
-    img_down = img.resize(new_size, Image.BILINEAR)
+    # Iterate through each of the k columns
+    for i in range(k):
+        # 1. Extract the column and reshape it into an (r, s) image matrix
+        column_vector = factor[:, i]
+        image_matrix = column_vector.reshape((r, s))
 
-    # Upscale back to original size
-    img_up = img_down.resize(original_size, Image.BILINEAR)
+        # 2. Convert to a PIL Image for resizing operations
+        # Using float32 is good practice for compatibility with PIL's filters
+        img = Image.fromarray(image_matrix.astype(np.float32))
 
-    return np.array(img_up, dtype=float)
+        # 3. Downscale the image
+        # Calculate the new size, ensuring dimensions are at least 1 pixel
+        new_width = max(1, int(img.width * scale_factor))
+        new_height = max(1, int(img.height * scale_factor))
+        new_size = (new_width, new_height)
+        img_down = img.resize(new_size, Image.BILINEAR)
 
+        # 4. Upscale the image back to its original size
+        img_up = img_down.resize(original_pil_size, Image.BILINEAR)
+
+        # 5. Convert the processed PIL image back to a NumPy array,
+        #    flatten it, and place it into the corresponding column of the result matrix.
+        processed_image_matrix = np.array(img_up, dtype=float)
+        result_matrix[:, i] = processed_image_matrix.flatten()
+
+    # If the original input was a 1D vector, return a 1D vector for consistency
+    if k == 1 and result_matrix.shape[1] == 1:
+        return result_matrix.flatten()
+
+    return result_matrix
 
 def matrix_to_image(matrix):
     """Convert matrix to PIL Image, clipping to [0, 255]"""
@@ -556,7 +586,7 @@ def main(image_path, k_values=None, noise_levels=None, scale_factors=None, outpu
         print(f"Generating right factor downscale-upscale series (scales: {scale_factors})...")
         right_factor_scale_images = []
         for scale in scale_factors:
-            scaled_V = downscale_upscale_factor(Vt_k.T, scale, Vt_k.T.shape)
+            scaled_V = downscale_upscale_factor(Vt_k.T, scale, r, s)
             img = reconstruct_from_kpsvd(U_k, S_k, scaled_V.T, shape_info)
             right_factor_scale_images.append(img)
 
