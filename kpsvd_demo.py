@@ -10,16 +10,6 @@ import base64
 from io import BytesIO
 import os
 
-# Audio processing imports
-try:
-    import librosa
-    import soundfile as sf
-    AUDIO_SUPPORT = True
-except ImportError:
-    AUDIO_SUPPORT = False
-    print("Warning: librosa or soundfile not installed. Audio support disabled.")
-    print("Install with: pip install librosa soundfile")
-
 
 def image_to_grayscale_matrix(image_path):
     """Convert image to grayscale matrix, cropping dimensions to multiples of 32"""
@@ -38,182 +28,6 @@ def image_to_grayscale_matrix(image_path):
         print(f"Cropped from {w}x{h} to {new_w}x{new_h}")
 
     return np.array(img, dtype=float)
-
-
-def audio_to_log_mel_spectrogram(audio_path, sr=16000, n_fft=400, hop_length=160, n_mels=80):
-    """
-    Convert audio to log-Mel spectrogram using Whisper parameters
-
-    Args:
-        audio_path: Path to audio file
-        sr: Sample rate (default: 16000, same as Whisper)
-        n_fft: FFT window size (default: 400, same as Whisper)
-        hop_length: Hop length (default: 160, same as Whisper)
-        n_mels: Number of mel bands (default: 80, same as Whisper)
-
-    Returns:
-        log_mel: Log-Mel spectrogram matrix
-        original_audio: Original audio waveform
-        sr: Sample rate
-    """
-    if not AUDIO_SUPPORT:
-        raise RuntimeError("Audio support not available. Install librosa and soundfile.")
-
-    # Load audio and convert to mono
-    audio, sr_orig = librosa.load(audio_path, sr=sr, mono=True)
-
-    # Create Mel spectrogram
-    mel_spec = librosa.feature.melspectrogram(
-        y=audio,
-        sr=sr,
-        n_fft=n_fft,
-        hop_length=hop_length,
-        n_mels=n_mels,
-        fmax=16000  # uses 16000 Hz as max frequency
-    )
-
-    # Convert to log scale (add small epsilon to avoid log(0))
-    log_mel = librosa.power_to_db(mel_spec, ref=np.max)
-
-    # Normalize to [0, 255] range for consistency with image processing
-    log_mel_normalized = ((log_mel - log_mel.min()) / (log_mel.max() - log_mel.min()) * 255)
-
-    # Compute STFT to extract phase information for GT phase reconstruction
-    stft = librosa.stft(audio, n_fft=n_fft, hop_length=hop_length)
-    phase = np.angle(stft)
-
-    print(f"Audio loaded: {audio.shape[0]/sr:.2f}s, spectrogram shape: {log_mel_normalized.shape}")
-
-    return log_mel_normalized, audio, sr, (n_fft, hop_length, n_mels), phase
-
-
-def log_mel_spectrogram_to_audio(log_mel, sr=16000, n_fft=400, hop_length=160, n_mels=80, duration=None):
-    """
-    Convert log-Mel spectrogram back to audio using Griffin-Lim algorithm
-
-    Args:
-        log_mel: Log-Mel spectrogram matrix (normalized to [0, 255])
-        sr: Sample rate
-        n_fft: FFT window size
-        hop_length: Hop length
-        n_mels: Number of mel bands
-        duration: Target duration in samples (optional)
-
-    Returns:
-        audio: Reconstructed audio waveform
-    """
-    if not AUDIO_SUPPORT:
-        raise RuntimeError("Audio support not available. Install librosa and soundfile.")
-
-    # Denormalize from [0, 255] range back to dB scale
-    log_mel_denorm = (log_mel / 255.0) * 80.0 - 80.0  # Approximate original range
-
-    # Convert from dB to power
-    mel_spec = librosa.db_to_power(log_mel_denorm)
-
-    # Invert mel spectrogram to linear spectrogram
-    spec = librosa.feature.inverse.mel_to_stft(
-        mel_spec,
-        sr=sr,
-        n_fft=n_fft,
-        fmax=16000
-    )
-
-    # Use Griffin-Lim to reconstruct audio
-    audio = librosa.griffinlim(
-        spec,
-        n_iter=32,
-        hop_length=hop_length,
-        win_length=n_fft
-    )
-
-    # Trim or pad to target duration if specified
-    if duration is not None:
-        if len(audio) > duration:
-            audio = audio[:duration]
-        elif len(audio) < duration:
-            audio = np.pad(audio, (0, duration - len(audio)))
-
-    return audio
-
-
-def log_mel_spectrogram_to_audio_with_gt_phase(log_mel, gt_phase, sr=16000, n_fft=400, hop_length=160, n_mels=80, duration=None):
-    """
-    Convert log-Mel spectrogram back to audio using GT (ground truth) phase
-
-    Args:
-        log_mel: Log-Mel spectrogram matrix (normalized to [0, 255])
-        gt_phase: Ground truth phase from original STFT
-        sr: Sample rate
-        n_fft: FFT window size
-        hop_length: Hop length
-        n_mels: Number of mel bands
-        duration: Target duration in samples (optional)
-
-    Returns:
-        audio: Reconstructed audio waveform
-    """
-    if not AUDIO_SUPPORT:
-        raise RuntimeError("Audio support not available. Install librosa and soundfile.")
-
-    # Denormalize from [0, 255] range back to dB scale
-    log_mel_denorm = (log_mel / 255.0) * 80.0 - 80.0  # Approximate original range
-
-    # Convert from dB to power
-    mel_spec = librosa.db_to_power(log_mel_denorm)
-
-    # Invert mel spectrogram to linear spectrogram (magnitude only)
-    magnitude = librosa.feature.inverse.mel_to_stft(
-        mel_spec,
-        sr=sr,
-        n_fft=n_fft,
-        fmax=16000
-    )
-
-    # Combine magnitude with GT phase
-    # Ensure dimensions match (trim or pad if necessary)
-    if magnitude.shape != gt_phase.shape:
-        min_frames = min(magnitude.shape[1], gt_phase.shape[1])
-        magnitude = magnitude[:, :min_frames]
-        gt_phase_trimmed = gt_phase[:, :min_frames]
-    else:
-        gt_phase_trimmed = gt_phase
-
-    # Reconstruct complex STFT
-    stft_complex = magnitude * np.exp(1j * gt_phase_trimmed)
-
-    # Inverse STFT to get audio
-    audio = librosa.istft(stft_complex, hop_length=hop_length, win_length=n_fft)
-
-    # Trim or pad to target duration if specified
-    if duration is not None:
-        if len(audio) > duration:
-            audio = audio[:duration]
-        elif len(audio) < duration:
-            audio = np.pad(audio, (0, duration - len(audio)))
-
-    return audio
-
-
-def save_audio_to_base64(audio, sr=16000):
-    """
-    Convert audio waveform to base64-encoded WAV for HTML embedding
-
-    Args:
-        audio: Audio waveform (numpy array)
-        sr: Sample rate
-
-    Returns:
-        Base64-encoded audio data URI
-    """
-    if not AUDIO_SUPPORT:
-        raise RuntimeError("Audio support not available. Install librosa and soundfile.")
-
-    buffer = BytesIO()
-    sf.write(buffer, audio, sr, format='WAV')
-    buffer.seek(0)
-    audio_b64 = base64.b64encode(buffer.read()).decode()
-    return f"data:audio/wav;base64,{audio_b64}"
 
 
 def kpsvd(M, k, left_scale):
@@ -414,13 +228,12 @@ def image_to_base64(img):
     return f"data:image/png;base64,{img_str}"
 
 
-def generate_html_visualization(original, all_k_results, noise_levels, scale_factors, shape_info,
-                                 audio_info=None, output_path='kpsvd_visualization.html'):
+def generate_html_visualization(original, all_k_results, noise_levels, scale_factors, shape_info, output_path='kpsvd_visualization.html'):
     """
     Generate HTML file with all visualizations
 
     Args:
-        original: Original grayscale matrix (or spectrogram for audio)
+        original: Original grayscale matrix
         all_k_results: Dict with k values as keys, each containing:
             - approximation: k-rank approximation
             - left_noise_images: List of images with left factor noise
@@ -428,14 +241,11 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
             - original_scale_images: List of downscale-upscale images of original
             - right_factor_scale_images: List of downscale-upscale images of right factor
             - compression_ratio: Compression ratio
-            - audio_data: (optional) audio waveforms for each variation
         noise_levels: Noise levels used
         scale_factors: Scale factors used for downscale-upscale
         shape_info: (p, q, r, s) dimensions
-        audio_info: (optional) dict with 'sr', 'n_fft', 'hop_length', 'n_mels', 'original_audio'
         output_path: Path to save HTML file
     """
-    is_audio = audio_info is not None
     p, q, r, s = shape_info
     m, n = original.shape
     k_values = sorted(all_k_results.keys())
@@ -543,53 +353,17 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                 Available k values: {', '.join(map(str, k_values))}
             </div>
         </div>
-"""
-
-    if is_audio:
-        html_content += """
-        <div class="slider-container" style="margin-top: 15px;">
-            <label for="phase-method">Phase Reconstruction Method:</label>
-            <select id="phase-method" style="padding: 5px; margin-left: 10px;">
-                <option value="gt">GT Phase (Ground Truth)</option>
-                <option value="gl">Griffin-Lim</option>
-            </select>
-            <div style="margin-top: 5px; color: #666; font-size: 0.9em;">
-                GT Phase uses original audio's phase information for better quality
-            </div>
-        </div>
-"""
-
-    html_content += """
     </div>
 
     <div class="section">
-        <h2>Original {"Spectrogram" if is_audio else "Image"}</h2>
+        <h2>Original Image</h2>
         <div class="image-grid">
             <div class="image-container">
                 <img src="{image_to_base64(matrix_to_image(original))}" alt="Original">
-                <div class="image-label">Original {"Spectrogram" if is_audio else "Image"}</div>
-"""
-
-    if is_audio and audio_info:
-        html_content += f"""
-                <audio controls style="width: 100%; margin-top: 10px;">
-                    <source src="{save_audio_to_base64(audio_info['original_audio'], audio_info['sr'])}" type="audio/wav">
-                </audio>
-"""
-
-    html_content += f"""
+                <div class="image-label">Original Image</div>
                 <div class="stats">
                     Shape: {original.shape}<br>
                     Total elements: {m * n}
-"""
-
-    if is_audio:
-        duration = len(audio_info['original_audio']) / audio_info['sr']
-        html_content += f"""<br>Duration: {duration:.2f}s<br>
-                    Sample rate: {audio_info['sr']} Hz
-"""
-
-    html_content += """
                 </div>
             </div>
         </div>
@@ -617,18 +391,6 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                 <div class="image-container">
                     <img src="{image_to_base64(matrix_to_image(approx))}" alt="Approximation k={k}">
                     <div class="image-label">k={k} Approximation</div>
-"""
-
-        if is_audio and 'approx_audio_gl' in result:
-            audio_gl_src = save_audio_to_base64(result['approx_audio_gl'], audio_info['sr'])
-            audio_gt_src = save_audio_to_base64(result['approx_audio_gt'], audio_info['sr'])
-            html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
-                        <source src="{audio_gt_src}" type="audio/wav">
-                    </audio>
-"""
-
-        html_content += f"""
                     <div class="stats">
                         <strong>Compression Ratio:</strong> {compression:.2f}×<br>
                         <strong>Storage:</strong> {p*q*k + k + r*s*k} elements (vs {m*n} original)<br>
@@ -652,18 +414,6 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                 <div class="image-container">
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Left noise {j}">
                     <div class="image-label">U noise σ={noise_level}</div>
-"""
-
-            if is_audio and 'left_noise_audio_gl' in result:
-                audio_gl_src = save_audio_to_base64(result['left_noise_audio_gl'][j], audio_info['sr'])
-                audio_gt_src = save_audio_to_base64(result['left_noise_audio_gt'][j], audio_info['sr'])
-                html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
-                        <source src="{audio_gt_src}" type="audio/wav">
-                    </audio>
-"""
-
-            html_content += f"""
                     <div class="stats">PSNR: {img_psnr:.2f} dB</div>
                 </div>
 """
@@ -685,18 +435,6 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                 <div class="image-container">
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Right noise {j}">
                     <div class="image-label">V noise σ={noise_level}</div>
-"""
-
-            if is_audio and 'right_noise_audio_gl' in result:
-                audio_gl_src = save_audio_to_base64(result['right_noise_audio_gl'][j], audio_info['sr'])
-                audio_gt_src = save_audio_to_base64(result['right_noise_audio_gt'][j], audio_info['sr'])
-                html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
-                        <source src="{audio_gt_src}" type="audio/wav">
-                    </audio>
-"""
-
-            html_content += f"""
                     <div class="stats">PSNR: {img_psnr:.2f} dB</div>
                 </div>
 """
@@ -719,18 +457,6 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                 <div class="image-container">
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Original scale {j}">
                     <div class="image-label">Original scale {scale}×</div>
-"""
-
-            if is_audio and 'original_scale_audio_gl' in result:
-                audio_gl_src = save_audio_to_base64(result['original_scale_audio_gl'][j], audio_info['sr'])
-                audio_gt_src = save_audio_to_base64(result['original_scale_audio_gt'][j], audio_info['sr'])
-                html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
-                        <source src="{audio_gt_src}" type="audio/wav">
-                    </audio>
-"""
-
-            html_content += f"""
                     <div class="stats">PSNR: {img_psnr:.2f} dB</div>
                 </div>
 """
@@ -753,18 +479,6 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                 <div class="image-container">
                     <img src="{image_to_base64(matrix_to_image(img))}" alt="Right factor scale {j}">
                     <div class="image-label">V scale {scale}×</div>
-"""
-
-            if is_audio and 'right_factor_scale_audio_gl' in result:
-                audio_gl_src = save_audio_to_base64(result['right_factor_scale_audio_gl'][j], audio_info['sr'])
-                audio_gt_src = save_audio_to_base64(result['right_factor_scale_audio_gt'][j], audio_info['sr'])
-                html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
-                        <source src="{audio_gt_src}" type="audio/wav">
-                    </audio>
-"""
-
-            html_content += f"""
                     <div class="stats">PSNR: {img_psnr:.2f} dB</div>
                 </div>
 """
@@ -807,33 +521,6 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                 selectedSection.classList.add('active');
             }
         });
-
-        // Phase reconstruction method switcher
-        const phaseMethodSelect = document.getElementById('phase-method');
-        if (phaseMethodSelect) {
-            phaseMethodSelect.addEventListener('change', function() {
-                const method = this.value; // 'gt' or 'gl'
-                const audioElements = document.querySelectorAll('.phase-audio');
-
-                audioElements.forEach(audio => {
-                    const currentTime = audio.currentTime;
-                    const wasPaused = audio.paused;
-
-                    // Get the appropriate audio source
-                    const audioSrc = method === 'gt' ? audio.dataset.audioGt : audio.dataset.audioGl;
-
-                    // Update the source
-                    audio.querySelector('source').src = audioSrc;
-                    audio.load();
-
-                    // Restore playback position
-                    audio.currentTime = currentTime;
-                    if (!wasPaused) {
-                        audio.play().catch(e => console.log('Playback prevented:', e));
-                    }
-                });
-            });
-        }
     </script>
 </body>
 </html>
@@ -845,12 +532,12 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
     print(f"HTML visualization saved to: {output_path}")
 
 
-def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_factors=None, output_html='kpsvd_visualization.html'):
+def main(image_path, left_scale=None, k_values=None, noise_levels=None, scale_factors=None, output_html='kpsvd_visualization.html'):
     """
     Main function to run KPSVD demo
 
     Args:
-        input_path: Path to input image or audio file
+        image_path: Path to input image
         k_values: List of k ranks to compute (default: [5, 10, 20, 50])
         noise_levels: List of noise standard deviations (default: [5, 10, 20])
         scale_factors: List of scale factors for downscale-upscale (default: [1.0, 0.5, 0.25, 0.125])
@@ -863,37 +550,9 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
     if scale_factors is None:
         scale_factors = [1.0, 0.5, 0.25, 0.125]
 
-    # Detect file type
-    audio_extensions = ['.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac']
-    is_audio = any(input_path.lower().endswith(ext) for ext in audio_extensions)
-
-    audio_info = None
-    original_audio = None
-    audio_params = None
-
-    if is_audio:
-        if not AUDIO_SUPPORT:
-            print("Error: Audio file detected but audio support not available.")
-            print("Install required packages: pip install librosa soundfile")
-            return
-
-        print(f"Loading audio: {input_path}")
-        M, original_audio, sr, audio_params, gt_phase = audio_to_log_mel_spectrogram(input_path)
-        n_fft, hop_length, n_mels = audio_params
-        audio_info = {
-            'sr': sr,
-            'n_fft': n_fft,
-            'hop_length': hop_length,
-            'n_mels': n_mels,
-            'original_audio': original_audio,
-            'gt_phase': gt_phase
-        }
-        print(f"Spectrogram shape: {M.shape}")
-    else:
-        print(f"Loading image: {input_path}")
-        M = image_to_grayscale_matrix(input_path)
-        print(f"Image shape: {M.shape}")
-
+    print(f"Loading image: {image_path}")
+    M = image_to_grayscale_matrix(image_path)
+    print(f"Image shape: {M.shape}")
     m, n = M.shape
 
     # Store results for all k values
@@ -943,7 +602,7 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
             img = reconstruct_from_kpsvd(U_k, S_k, scaled_V.T, shape_info)
             right_factor_scale_images.append(img)
 
-        result_dict = {
+        all_k_results[k] = {
             'approximation': M_approx,
             'left_noise_images': left_noise_images,
             'right_noise_images': right_noise_images,
@@ -952,86 +611,8 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
             'compression_ratio': compression_ratio
         }
 
-        # Generate audio if processing audio file
-        if is_audio and audio_info:
-            print(f"Generating audio from spectrograms (both Griffin-Lim and GT phase)...")
-            target_duration = len(original_audio)
-            gt_phase = audio_info['gt_phase']
-
-            # Approximation audio (both methods)
-            result_dict['approx_audio_gl'] = log_mel_spectrogram_to_audio(
-                M_approx, audio_info['sr'], audio_info['n_fft'],
-                audio_info['hop_length'], audio_info['n_mels'], target_duration
-            )
-            result_dict['approx_audio_gt'] = log_mel_spectrogram_to_audio_with_gt_phase(
-                M_approx, gt_phase, audio_info['sr'], audio_info['n_fft'],
-                audio_info['hop_length'], audio_info['n_mels'], target_duration
-            )
-
-            # Left noise audio series (both methods)
-            result_dict['left_noise_audio_gl'] = []
-            result_dict['left_noise_audio_gt'] = []
-            for img in left_noise_images:
-                audio_gl = log_mel_spectrogram_to_audio(
-                    img, audio_info['sr'], audio_info['n_fft'],
-                    audio_info['hop_length'], audio_info['n_mels'], target_duration
-                )
-                audio_gt = log_mel_spectrogram_to_audio_with_gt_phase(
-                    img, gt_phase, audio_info['sr'], audio_info['n_fft'],
-                    audio_info['hop_length'], audio_info['n_mels'], target_duration
-                )
-                result_dict['left_noise_audio_gl'].append(audio_gl)
-                result_dict['left_noise_audio_gt'].append(audio_gt)
-
-            # Right noise audio series (both methods)
-            result_dict['right_noise_audio_gl'] = []
-            result_dict['right_noise_audio_gt'] = []
-            for img in right_noise_images:
-                audio_gl = log_mel_spectrogram_to_audio(
-                    img, audio_info['sr'], audio_info['n_fft'],
-                    audio_info['hop_length'], audio_info['n_mels'], target_duration
-                )
-                audio_gt = log_mel_spectrogram_to_audio_with_gt_phase(
-                    img, gt_phase, audio_info['sr'], audio_info['n_fft'],
-                    audio_info['hop_length'], audio_info['n_mels'], target_duration
-                )
-                result_dict['right_noise_audio_gl'].append(audio_gl)
-                result_dict['right_noise_audio_gt'].append(audio_gt)
-
-            # Original scale audio series (both methods)
-            result_dict['original_scale_audio_gl'] = []
-            result_dict['original_scale_audio_gt'] = []
-            for img in original_scale_images:
-                audio_gl = log_mel_spectrogram_to_audio(
-                    img, audio_info['sr'], audio_info['n_fft'],
-                    audio_info['hop_length'], audio_info['n_mels'], target_duration
-                )
-                audio_gt = log_mel_spectrogram_to_audio_with_gt_phase(
-                    img, gt_phase, audio_info['sr'], audio_info['n_fft'],
-                    audio_info['hop_length'], audio_info['n_mels'], target_duration
-                )
-                result_dict['original_scale_audio_gl'].append(audio_gl)
-                result_dict['original_scale_audio_gt'].append(audio_gt)
-
-            # Right factor scale audio series (both methods)
-            result_dict['right_factor_scale_audio_gl'] = []
-            result_dict['right_factor_scale_audio_gt'] = []
-            for img in right_factor_scale_images:
-                audio_gl = log_mel_spectrogram_to_audio(
-                    img, audio_info['sr'], audio_info['n_fft'],
-                    audio_info['hop_length'], audio_info['n_mels'], target_duration
-                )
-                audio_gt = log_mel_spectrogram_to_audio_with_gt_phase(
-                    img, gt_phase, audio_info['sr'], audio_info['n_fft'],
-                    audio_info['hop_length'], audio_info['n_mels'], target_duration
-                )
-                result_dict['right_factor_scale_audio_gl'].append(audio_gl)
-                result_dict['right_factor_scale_audio_gt'].append(audio_gt)
-
-        all_k_results[k] = result_dict
-
     print(f"\nGenerating HTML visualization...")
-    generate_html_visualization(M, all_k_results, noise_levels, scale_factors, shape_info, audio_info, output_html)
+    generate_html_visualization(M, all_k_results, noise_levels, scale_factors, shape_info, output_html)
 
     print("\nDone!")
 
@@ -1040,18 +621,15 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 3:
-        print("Usage: python kpsvd_demo.py <left_scale> <input_path> [k_values...] [--noise noise_levels...] [--scale scale_factors...]")
-        print("Example (image): python kpsvd_demo.py 1 image.jpg 5 10 20 50 --noise 5 10 20 --scale 1.0 0.5 0.25 0.125")
-        print("Example (audio): python kpsvd_demo.py 1 audio.wav 5 10 20 50 --noise 5 10 20 --scale 1.0 0.5 0.25 0.125")
+        print("Usage: python kpsvd_demo.py <left_scale> <image_path> [k_values...] [--noise noise_levels...] [--scale scale_factors...]")
+        print("Example: python kpsvd_demo.py 1 image.jpg 5 10 20 50 --noise 5 10 20 --scale 1.0 0.5 0.25 0.125")
         print("Default k values: [5, 10, 20, 50]")
         print("Default noise levels: [5, 10, 20]")
         print("Default scale factors: [1.0, 0.5, 0.25, 0.125]")
-        print("\nSupported image formats: jpg, png, bmp, gif, etc.")
-        print("Supported audio formats: wav, mp3, flac, ogg, m4a, aac")
         sys.exit(1)
 
     left_scale = int(sys.argv[1])
-    input_path = sys.argv[2]
+    image_path = sys.argv[2]
 
     # Parse k values, noise levels, and scale factors
     k_values = []
@@ -1079,4 +657,4 @@ if __name__ == "__main__":
     noise_levels = noise_levels if noise_levels else None
     scale_factors = scale_factors if scale_factors else None
 
-    main(input_path, left_scale, k_values, noise_levels, scale_factors)
+    main(image_path, left_scale, k_values, noise_levels, scale_factors)
