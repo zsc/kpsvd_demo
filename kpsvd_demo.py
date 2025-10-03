@@ -69,7 +69,7 @@ def audio_to_log_mel_spectrogram(audio_path, sr=16000, n_fft=400, hop_length=160
         n_fft=n_fft,
         hop_length=hop_length,
         n_mels=n_mels,
-        fmax=8000  # Whisper uses 8000 Hz as max frequency
+        fmax=16000  # uses 16000 Hz as max frequency
     )
 
     # Convert to log scale (add small epsilon to avoid log(0))
@@ -112,7 +112,7 @@ def log_mel_spectrogram_to_audio(log_mel, sr=16000, n_fft=400, hop_length=160, n
         mel_spec,
         sr=sr,
         n_fft=n_fft,
-        fmax=8000
+        fmax=16000
     )
 
     # Use Griffin-Lim to reconstruct audio
