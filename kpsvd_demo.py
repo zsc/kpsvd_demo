@@ -78,9 +78,13 @@ def audio_to_log_mel_spectrogram(audio_path, sr=16000, n_fft=400, hop_length=160
     # Normalize to [0, 255] range for consistency with image processing
     log_mel_normalized = ((log_mel - log_mel.min()) / (log_mel.max() - log_mel.min()) * 255)
 
+    # Compute STFT to extract phase information for GT phase reconstruction
+    stft = librosa.stft(audio, n_fft=n_fft, hop_length=hop_length)
+    phase = np.angle(stft)
+
     print(f"Audio loaded: {audio.shape[0]/sr:.2f}s, spectrogram shape: {log_mel_normalized.shape}")
 
-    return log_mel_normalized, audio, sr, (n_fft, hop_length, n_mels)
+    return log_mel_normalized, audio, sr, (n_fft, hop_length, n_mels), phase
 
 
 def log_mel_spectrogram_to_audio(log_mel, sr=16000, n_fft=400, hop_length=160, n_mels=80, duration=None):
@@ -122,6 +126,64 @@ def log_mel_spectrogram_to_audio(log_mel, sr=16000, n_fft=400, hop_length=160, n
         hop_length=hop_length,
         win_length=n_fft
     )
+
+    # Trim or pad to target duration if specified
+    if duration is not None:
+        if len(audio) > duration:
+            audio = audio[:duration]
+        elif len(audio) < duration:
+            audio = np.pad(audio, (0, duration - len(audio)))
+
+    return audio
+
+
+def log_mel_spectrogram_to_audio_with_gt_phase(log_mel, gt_phase, sr=16000, n_fft=400, hop_length=160, n_mels=80, duration=None):
+    """
+    Convert log-Mel spectrogram back to audio using GT (ground truth) phase
+
+    Args:
+        log_mel: Log-Mel spectrogram matrix (normalized to [0, 255])
+        gt_phase: Ground truth phase from original STFT
+        sr: Sample rate
+        n_fft: FFT window size
+        hop_length: Hop length
+        n_mels: Number of mel bands
+        duration: Target duration in samples (optional)
+
+    Returns:
+        audio: Reconstructed audio waveform
+    """
+    if not AUDIO_SUPPORT:
+        raise RuntimeError("Audio support not available. Install librosa and soundfile.")
+
+    # Denormalize from [0, 255] range back to dB scale
+    log_mel_denorm = (log_mel / 255.0) * 80.0 - 80.0  # Approximate original range
+
+    # Convert from dB to power
+    mel_spec = librosa.db_to_power(log_mel_denorm)
+
+    # Invert mel spectrogram to linear spectrogram (magnitude only)
+    magnitude = librosa.feature.inverse.mel_to_stft(
+        mel_spec,
+        sr=sr,
+        n_fft=n_fft,
+        fmax=16000
+    )
+
+    # Combine magnitude with GT phase
+    # Ensure dimensions match (trim or pad if necessary)
+    if magnitude.shape != gt_phase.shape:
+        min_frames = min(magnitude.shape[1], gt_phase.shape[1])
+        magnitude = magnitude[:, :min_frames]
+        gt_phase_trimmed = gt_phase[:, :min_frames]
+    else:
+        gt_phase_trimmed = gt_phase
+
+    # Reconstruct complex STFT
+    stft_complex = magnitude * np.exp(1j * gt_phase_trimmed)
+
+    # Inverse STFT to get audio
+    audio = librosa.istft(stft_complex, hop_length=hop_length, win_length=n_fft)
 
     # Trim or pad to target duration if specified
     if duration is not None:
@@ -481,6 +543,23 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                 Available k values: {', '.join(map(str, k_values))}
             </div>
         </div>
+"""
+
+    if is_audio:
+        html_content += """
+        <div class="slider-container" style="margin-top: 15px;">
+            <label for="phase-method">Phase Reconstruction Method:</label>
+            <select id="phase-method" style="padding: 5px; margin-left: 10px;">
+                <option value="gt">GT Phase (Ground Truth)</option>
+                <option value="gl">Griffin-Lim</option>
+            </select>
+            <div style="margin-top: 5px; color: #666; font-size: 0.9em;">
+                GT Phase uses original audio's phase information for better quality
+            </div>
+        </div>
+"""
+
+    html_content += """
     </div>
 
     <div class="section">
@@ -540,10 +619,12 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                     <div class="image-label">k={k} Approximation</div>
 """
 
-        if is_audio and 'approx_audio' in result:
+        if is_audio and 'approx_audio_gl' in result:
+            audio_gl_src = save_audio_to_base64(result['approx_audio_gl'], audio_info['sr'])
+            audio_gt_src = save_audio_to_base64(result['approx_audio_gt'], audio_info['sr'])
             html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;">
-                        <source src="{save_audio_to_base64(result['approx_audio'], audio_info['sr'])}" type="audio/wav">
+                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
+                        <source src="{audio_gt_src}" type="audio/wav">
                     </audio>
 """
 
@@ -573,10 +654,12 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                     <div class="image-label">U noise σ={noise_level}</div>
 """
 
-            if is_audio and 'left_noise_audio' in result:
+            if is_audio and 'left_noise_audio_gl' in result:
+                audio_gl_src = save_audio_to_base64(result['left_noise_audio_gl'][j], audio_info['sr'])
+                audio_gt_src = save_audio_to_base64(result['left_noise_audio_gt'][j], audio_info['sr'])
                 html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;">
-                        <source src="{save_audio_to_base64(result['left_noise_audio'][j], audio_info['sr'])}" type="audio/wav">
+                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
+                        <source src="{audio_gt_src}" type="audio/wav">
                     </audio>
 """
 
@@ -604,10 +687,12 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                     <div class="image-label">V noise σ={noise_level}</div>
 """
 
-            if is_audio and 'right_noise_audio' in result:
+            if is_audio and 'right_noise_audio_gl' in result:
+                audio_gl_src = save_audio_to_base64(result['right_noise_audio_gl'][j], audio_info['sr'])
+                audio_gt_src = save_audio_to_base64(result['right_noise_audio_gt'][j], audio_info['sr'])
                 html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;">
-                        <source src="{save_audio_to_base64(result['right_noise_audio'][j], audio_info['sr'])}" type="audio/wav">
+                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
+                        <source src="{audio_gt_src}" type="audio/wav">
                     </audio>
 """
 
@@ -636,10 +721,12 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                     <div class="image-label">Original scale {scale}×</div>
 """
 
-            if is_audio and 'original_scale_audio' in result:
+            if is_audio and 'original_scale_audio_gl' in result:
+                audio_gl_src = save_audio_to_base64(result['original_scale_audio_gl'][j], audio_info['sr'])
+                audio_gt_src = save_audio_to_base64(result['original_scale_audio_gt'][j], audio_info['sr'])
                 html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;">
-                        <source src="{save_audio_to_base64(result['original_scale_audio'][j], audio_info['sr'])}" type="audio/wav">
+                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
+                        <source src="{audio_gt_src}" type="audio/wav">
                     </audio>
 """
 
@@ -668,10 +755,12 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                     <div class="image-label">V scale {scale}×</div>
 """
 
-            if is_audio and 'right_factor_scale_audio' in result:
+            if is_audio and 'right_factor_scale_audio_gl' in result:
+                audio_gl_src = save_audio_to_base64(result['right_factor_scale_audio_gl'][j], audio_info['sr'])
+                audio_gt_src = save_audio_to_base64(result['right_factor_scale_audio_gt'][j], audio_info['sr'])
                 html_content += f"""
-                    <audio controls style="width: 100%; margin-top: 10px;">
-                        <source src="{save_audio_to_base64(result['right_factor_scale_audio'][j], audio_info['sr'])}" type="audio/wav">
+                    <audio controls style="width: 100%; margin-top: 10px;" class="phase-audio" data-audio-gl="{audio_gl_src}" data-audio-gt="{audio_gt_src}">
+                        <source src="{audio_gt_src}" type="audio/wav">
                     </audio>
 """
 
@@ -718,6 +807,33 @@ def generate_html_visualization(original, all_k_results, noise_levels, scale_fac
                 selectedSection.classList.add('active');
             }
         });
+
+        // Phase reconstruction method switcher
+        const phaseMethodSelect = document.getElementById('phase-method');
+        if (phaseMethodSelect) {
+            phaseMethodSelect.addEventListener('change', function() {
+                const method = this.value; // 'gt' or 'gl'
+                const audioElements = document.querySelectorAll('.phase-audio');
+
+                audioElements.forEach(audio => {
+                    const currentTime = audio.currentTime;
+                    const wasPaused = audio.paused;
+
+                    // Get the appropriate audio source
+                    const audioSrc = method === 'gt' ? audio.dataset.audioGt : audio.dataset.audioGl;
+
+                    // Update the source
+                    audio.querySelector('source').src = audioSrc;
+                    audio.load();
+
+                    // Restore playback position
+                    audio.currentTime = currentTime;
+                    if (!wasPaused) {
+                        audio.play().catch(e => console.log('Playback prevented:', e));
+                    }
+                });
+            });
+        }
     </script>
 </body>
 </html>
@@ -762,14 +878,15 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
             return
 
         print(f"Loading audio: {input_path}")
-        M, original_audio, sr, audio_params = audio_to_log_mel_spectrogram(input_path)
+        M, original_audio, sr, audio_params, gt_phase = audio_to_log_mel_spectrogram(input_path)
         n_fft, hop_length, n_mels = audio_params
         audio_info = {
             'sr': sr,
             'n_fft': n_fft,
             'hop_length': hop_length,
             'n_mels': n_mels,
-            'original_audio': original_audio
+            'original_audio': original_audio,
+            'gt_phase': gt_phase
         }
         print(f"Spectrogram shape: {M.shape}")
     else:
@@ -837,50 +954,79 @@ def main(input_path, left_scale=None, k_values=None, noise_levels=None, scale_fa
 
         # Generate audio if processing audio file
         if is_audio and audio_info:
-            print(f"Generating audio from spectrograms...")
+            print(f"Generating audio from spectrograms (both Griffin-Lim and GT phase)...")
             target_duration = len(original_audio)
+            gt_phase = audio_info['gt_phase']
 
-            # Approximation audio
-            result_dict['approx_audio'] = log_mel_spectrogram_to_audio(
+            # Approximation audio (both methods)
+            result_dict['approx_audio_gl'] = log_mel_spectrogram_to_audio(
                 M_approx, audio_info['sr'], audio_info['n_fft'],
                 audio_info['hop_length'], audio_info['n_mels'], target_duration
             )
+            result_dict['approx_audio_gt'] = log_mel_spectrogram_to_audio_with_gt_phase(
+                M_approx, gt_phase, audio_info['sr'], audio_info['n_fft'],
+                audio_info['hop_length'], audio_info['n_mels'], target_duration
+            )
 
-            # Left noise audio series
-            result_dict['left_noise_audio'] = []
+            # Left noise audio series (both methods)
+            result_dict['left_noise_audio_gl'] = []
+            result_dict['left_noise_audio_gt'] = []
             for img in left_noise_images:
-                audio = log_mel_spectrogram_to_audio(
+                audio_gl = log_mel_spectrogram_to_audio(
                     img, audio_info['sr'], audio_info['n_fft'],
                     audio_info['hop_length'], audio_info['n_mels'], target_duration
                 )
-                result_dict['left_noise_audio'].append(audio)
+                audio_gt = log_mel_spectrogram_to_audio_with_gt_phase(
+                    img, gt_phase, audio_info['sr'], audio_info['n_fft'],
+                    audio_info['hop_length'], audio_info['n_mels'], target_duration
+                )
+                result_dict['left_noise_audio_gl'].append(audio_gl)
+                result_dict['left_noise_audio_gt'].append(audio_gt)
 
-            # Right noise audio series
-            result_dict['right_noise_audio'] = []
+            # Right noise audio series (both methods)
+            result_dict['right_noise_audio_gl'] = []
+            result_dict['right_noise_audio_gt'] = []
             for img in right_noise_images:
-                audio = log_mel_spectrogram_to_audio(
+                audio_gl = log_mel_spectrogram_to_audio(
                     img, audio_info['sr'], audio_info['n_fft'],
                     audio_info['hop_length'], audio_info['n_mels'], target_duration
                 )
-                result_dict['right_noise_audio'].append(audio)
+                audio_gt = log_mel_spectrogram_to_audio_with_gt_phase(
+                    img, gt_phase, audio_info['sr'], audio_info['n_fft'],
+                    audio_info['hop_length'], audio_info['n_mels'], target_duration
+                )
+                result_dict['right_noise_audio_gl'].append(audio_gl)
+                result_dict['right_noise_audio_gt'].append(audio_gt)
 
-            # Original scale audio series
-            result_dict['original_scale_audio'] = []
+            # Original scale audio series (both methods)
+            result_dict['original_scale_audio_gl'] = []
+            result_dict['original_scale_audio_gt'] = []
             for img in original_scale_images:
-                audio = log_mel_spectrogram_to_audio(
+                audio_gl = log_mel_spectrogram_to_audio(
                     img, audio_info['sr'], audio_info['n_fft'],
                     audio_info['hop_length'], audio_info['n_mels'], target_duration
                 )
-                result_dict['original_scale_audio'].append(audio)
+                audio_gt = log_mel_spectrogram_to_audio_with_gt_phase(
+                    img, gt_phase, audio_info['sr'], audio_info['n_fft'],
+                    audio_info['hop_length'], audio_info['n_mels'], target_duration
+                )
+                result_dict['original_scale_audio_gl'].append(audio_gl)
+                result_dict['original_scale_audio_gt'].append(audio_gt)
 
-            # Right factor scale audio series
-            result_dict['right_factor_scale_audio'] = []
+            # Right factor scale audio series (both methods)
+            result_dict['right_factor_scale_audio_gl'] = []
+            result_dict['right_factor_scale_audio_gt'] = []
             for img in right_factor_scale_images:
-                audio = log_mel_spectrogram_to_audio(
+                audio_gl = log_mel_spectrogram_to_audio(
                     img, audio_info['sr'], audio_info['n_fft'],
                     audio_info['hop_length'], audio_info['n_mels'], target_duration
                 )
-                result_dict['right_factor_scale_audio'].append(audio)
+                audio_gt = log_mel_spectrogram_to_audio_with_gt_phase(
+                    img, gt_phase, audio_info['sr'], audio_info['n_fft'],
+                    audio_info['hop_length'], audio_info['n_mels'], target_duration
+                )
+                result_dict['right_factor_scale_audio_gl'].append(audio_gl)
+                result_dict['right_factor_scale_audio_gt'].append(audio_gt)
 
         all_k_results[k] = result_dict
 
